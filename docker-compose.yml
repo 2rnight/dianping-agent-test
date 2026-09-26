@@ -1,0 +1,83 @@
+# 黑马点评本地中间件（MySQL + Redis + RabbitMQ）
+#
+# 用法（Windows PowerShell / CMD，进到项目根目录 D:\code\dianping 执行）：
+#   docker compose up -d        # 一键启动三个中间件
+#   docker compose ps           # 查看运行状态
+#   docker compose logs -f      # 看日志（排查用）
+#   docker compose down         # 全部停止（数据保留在 volume 里，下次 up 还在）
+#
+# 端口对照（已与 src/main/resources/application.yaml 对齐，改这里要同步改 yaml）：
+#   MySQL    宿主机 3306  -> 容器 3306  （JDBC url 里就是 3306）
+#   Redis    宿主机 6379  -> 容器 6379  （RedissonConfig / yaml 里就是 6379）
+#   RabbitMQ 宿主机 25672 -> 容器 5672  （本机 5672 被 Windows 占用，只能映射！右侧必须是 5672）
+#   MQ 后台  宿主机 15672 -> 容器 15672  （http://localhost:15672，guest/guest）
+#
+# 注意：启动前先停掉本机同端口的程序，否则端口冲突起不来：
+#   本机 MySQL 服务  -> net stop MySQL80（服务名以 services.msc 里看到的为准）
+#   本机 redis-server.exe -> 关窗口 / 任务管理器结束
+#   之前手动建的 rabbitmq 容器 -> docker rm -f <容器名>
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: hmdp-mysql
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456 # 必须和 application.yaml 里 datasource.password 一致
+      MYSQL_DATABASE: dingping    # 首次启动自动建库（空库，表结构需再导一次 hmdp.sql）
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - hmdp-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hmdp-redis
+    restart: unless-stopped
+    # 开 AOF 持久化，数据目录 /data 在容器内可写，不会再报 MISCONF；
+    # 无密码（与 application.yaml / RedissonConfig 一致，不要加 requirepass）
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - hmdp-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: hmdp-rabbitmq
+    hostname: hmdp-rabbit # 固定节点名，避免 recreate 后 mnesia 数据认不出节点
+    restart: unless-stopped
+    environment:
+      # 允许 guest 经非 loopback 登录：经 Docker 端口映射进来的连接源 IP 是网桥地址，
+      # 默认会被 RabbitMQ 的 loopback_users 限制拒绝。仅本地开发用，生产请建专用账号。
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit loopback_users []"
+    ports:
+      - "25672:5672"   # 左侧=宿主机端口（yaml 里连的就是它），右侧=容器内 AMQP 端口（勿改）
+      - "15672:15672"  # 管理后台，guest/guest
+    volumes:
+      - hmdp-mq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  hmdp-mysql-data:
+  hmdp-redis-data:
+  hmdp-mq-data:
