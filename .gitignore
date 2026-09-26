@@ -35,3 +35,8 @@ build/
 ### JVM crash logs ###
 hs_err_pid*.log
 replay_pid*.log
+
+# nginx 运行时文件（保留空目录结构）
+nginx-1.18.0/logs/*
+!nginx-1.18.0/logs/.gitkeep
+*.pid

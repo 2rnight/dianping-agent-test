@@ -9,7 +9,7 @@
           concurrency: 5
           prefetch: 10
       host: localhost
-      port: 25672
+      port: 5672
       username: guest
       password: guest
     application:

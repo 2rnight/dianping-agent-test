@@ -129,7 +129,8 @@
           .catch(this.$message.error);
       },
       deletePic(i) {
-        axios.get("/upload/blog/delete?name=" + this.fileList[i])
+        // 后端是 DELETE /upload/blog/delete，且 name 须是 /blogs/...（不带 /imgs 前缀）
+        axios.delete("/upload/blog/delete?name=" + this.fileList[i].replace('/imgs', ''))
           .then(() => this.fileList.splice(i, 1))
           .catch(this.$message.error)
       },
