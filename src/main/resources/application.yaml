@@ -9,7 +9,9 @@
           concurrency: 5
           prefetch: 10
       host: localhost
-      port: 5672
+      # 注意：本机 5672 被 Windows 占用，RabbitMQ 跑在 Docker 里，
+      # 这里填的是宿主机映射端口（对应启动参数 -p 25672:5672），不要改成 5672
+      port: 25672
       username: guest
       password: guest
     application:
