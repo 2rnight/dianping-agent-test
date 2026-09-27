@@ -39,4 +39,6 @@ replay_pid*.log
 # nginx 运行时文件（保留空目录结构）
 nginx-1.18.0/logs/*
 !nginx-1.18.0/logs/.gitkeep
+nginx-1.18.0/temp/*/**
+!nginx-1.18.0/temp/*/.gitkeep
 *.pid
