@@ -17,8 +17,9 @@
   # 真的写：Redis 跑在 docker 里，默认就是这条命令
   python tools/init-test-tokens.py --count 200
 
-  # 顺带把 1 号券重置成 100 库存（用户 1..200 抢 100 张，才能真正测出超卖/一人一单）
-  python tools/init-test-tokens.py --count 200 --reset-voucher 1 --stock 100 --reset-db
+  # 顺带把某张券重置成 100 库存（用户 1..200 抢 100 张，才能真正测出超卖/一人一单）
+  python tools/init-test-tokens.py --count 200 --reset-voucher <券id> --stock 100 --reset-db
+  # 注意：<券id> 必须是 tb_seckill_voucher 里真实存在的秒杀券 id（--reset-db 时会自动校验并警告）
 
   # Redis 是原生安装（不在 docker 里）时：
   python tools/init-test-tokens.py --count 200 --redis-cmd "redis-cli -h 127.0.0.1 -p 6379"
@@ -62,6 +63,49 @@ def run_piped(cmd, text, what):
             print(proc.stderr.strip()[:2000])
         sys.exit(3)
     print("[ok] %s 完成" % what)
+
+
+def run_capture(cmd, text, what):
+    """执行命令并返回 stdout（失败/命令不存在时返回 None，不退出）。"""
+    argv = shlex.split(cmd, posix=(os.name != "nt"))
+    try:
+        proc = subprocess.run(
+            argv, input=text, text=True, capture_output=True, encoding="utf-8", errors="replace"
+        )
+    except FileNotFoundError:
+        print("[warn] 找不到命令 %s，跳过「%s」" % (argv[0], what))
+        return None
+    if proc.returncode != 0:
+        print("[warn] %s 执行失败：%s" % (what, (proc.stderr or "").strip()[:300]))
+        return None
+    return proc.stdout or ""
+
+
+def check_voucher_exists(mysql_cmd, vid):
+    """
+    校验这张券真的在 tb_seckill_voucher 里。
+    最常见的坑：Redis 里有 seckill:stock:<id>（手动 SET 的"孤儿键"），
+    但 MySQL 里根本没有这张秒杀券 —— 压测会全部返回「优惠券不存在」。
+    """
+    sql = "SELECT COUNT(*) FROM tb_seckill_voucher WHERE voucher_id = %d;\n" % vid
+    out = run_capture(mysql_cmd, sql, "校验券是否存在")
+    if out is None:
+        return None                      # 查不了（没装 mysql 客户端等），不阻塞流程
+    lines = [l.strip() for l in out.strip().splitlines() if l.strip()]
+    if not lines:
+        return None
+    if lines[-1] == "0":
+        print("")
+        print("!" * 72)
+        print("[WARN] tb_seckill_voucher 里没有 voucher_id = %d 这张券！" % vid)
+        print("       压测会全部返回「优惠券不存在」（checkTimeWindow 先查这张表，查不到直接 fail）。")
+        print("       Redis 的 seckill:stock:%d 只是手写的孤儿键，不能说明券存在。" % vid)
+        print("       先看清楚所有秒杀券的 id：")
+        print('       docker exec hmdp-mysql mysql -uroot -p123456 -N -B -e "select v.id, v.title, v.type, s.stock, s.begin_time, s.end_time from dingping.tb_voucher v join dingping.tb_seckill_voucher s on s.voucher_id = v.id;"')
+        print("!" * 72)
+        return False
+    print("[ok] 券 %d 存在于 tb_seckill_voucher" % vid)
+    return True
 
 
 def build_token_commands(tokens, user_ids, ttl):
@@ -143,7 +187,11 @@ def main():
             % (stock, vid, vid, vid)
         )
         if args.reset_db and not args.dry_run:
-            run_piped(args.mysql_cmd, sql, "重置 MySQL 券状态")
+            exists = check_voucher_exists(args.mysql_cmd, vid)
+            if exists is False:
+                print("[skip] 券不存在，跳过 MySQL 重置（UPDATE 会是 0 行，改了也没意义）")
+            else:
+                run_piped(args.mysql_cmd, sql, "重置 MySQL 券状态")
         else:
             print("  还要同步重置 MySQL（--reset-db 会自动执行，或自己复制到客户端跑）：")
             for line in sql.strip().splitlines():

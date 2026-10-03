@@ -154,6 +154,12 @@ curl -X POST http://localhost:8081/user/login \
 不重置的话：Redis 里的 `seckill:stock:<id>` 还是上次扣完的库存（全返回"库存不足"），
 `seckill:order:<id>` 集合里还留着上次那批用户（全返回"不能重复下单"）。
 
+> ⚠️ **`<券id>` 必须是 `tb_seckill_voucher` 里真实存在的秒杀券**。加 `--reset-db` 时脚本会先查一次，
+> 不存在就打印警告并跳过 MySQL 重置 —— 因为 Redis 的 `seckill:stock:<id>` 可以靠手动 `SET` 造出来
+> （"孤儿键"），但接口里 `checkTimeWindow()` 会先查 `tb_seckill_voucher`，查不到直接返回
+> **「优惠券不存在」**。仓库自带的 `hmdp.sql` 里 `tb_voucher` 只有 id=1 的**普通券**（`type=0`），
+> `tb_seckill_voucher` 是空的，别拿 id=1 当秒杀券压。
+
 ```bash
 # 重置成：Redis + MySQL 库存都是 10，订单清空
 python tools/init-test-tokens.py --count 200 --reset-voucher <券id> --stock 10 --reset-db
