@@ -46,3 +46,7 @@ nginx-1.18.0/temp/*/**
 # 压测脚本生成的登录 token（本地临时文件，不要提交）
 /tokens.txt
 /one-token.txt
+
+### Python ###
+__pycache__/
+*.py[cod]
