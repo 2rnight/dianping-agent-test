@@ -42,3 +42,7 @@ nginx-1.18.0/logs/*
 nginx-1.18.0/temp/*/**
 !nginx-1.18.0/temp/*/.gitkeep
 *.pid
+
+# 压测脚本生成的登录 token（本地临时文件，不要提交）
+/tokens.txt
+/one-token.txt
