@@ -18,7 +18,9 @@
       name: hmdp
     datasource:
       driver-class-name: com.mysql.jdbc.Driver
-      url: jdbc:mysql://127.0.0.1:3306/dingping?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      # 注意：MySQL 跑在 Docker 里，本机 3306 被原生 MySQL 占用，
+      # 这里填的是宿主机映射端口（对应 docker-compose.yml 的 "3307:3306"），不要写成 3306
+      url: jdbc:mysql://127.0.0.1:3307/dingping?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
       username: root
       password: 123456
     redis:

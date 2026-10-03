@@ -7,15 +7,31 @@
 #   docker compose down         # 全部停止（数据保留在 volume 里，下次 up 还在）
 #
 # 端口对照（已与 src/main/resources/application.yaml 对齐，改这里要同步改 yaml）：
-#   MySQL    宿主机 3306  -> 容器 3306  （JDBC url 里就是 3306）
+#   MySQL    宿主机 3307  -> 容器 3306  （JDBC url 里就是 3307）
 #   Redis    宿主机 6379  -> 容器 6379  （RedissonConfig / yaml 里就是 6379）
 #   RabbitMQ 宿主机 25672 -> 容器 5672  （本机 5672 被 Windows 占用，只能映射！右侧必须是 5672）
 #   MQ 后台  宿主机 15672 -> 容器 15672  （http://localhost:15672，guest/guest）
 #
-# 注意：启动前先停掉本机同端口的程序，否则端口冲突起不来：
+# 为什么 MySQL 宿主机端口是 3307 而不是 3306：
+#   本机 3306 已被别的程序占用（原生 MySQL 服务 / 残留的 mysql 容器 / 其它软件的 MySQL），
+#   Docker 抢不到该端口，compose 就会报：
+#     Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:3306 ...:
+#     bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+#   所以让出 3306 给原生 MySQL，容器对外用 3307（容器内部仍走标准 3306，镜像不用动）。
+#
+# 谁占了 3306？在管理员 CMD / PowerShell 里查：
+#   netstat -ano | findstr ":3306" | findstr LISTENING   # 最后一列是 PID
+#   tasklist /FI "PID eq <PID>"                          # 看这个 PID 是什么程序
+#   docker ps --filter "publish=3306"                    # 也可能是别的容器占着
+#
+# 想让 MySQL 重新用回 3306：先停掉占用者（本机服务：net stop MySQL80，服务名以 services.msc 为准；
+# 残留容器：docker rm -f <容器名>），再把下面 ports 改成 "3306:3306"，
+# 并同步把 application.yaml 里 JDBC url 的端口改回 3306（两处必须一致）。
+#
+# 注意：启动前先确认端口没被占，否则对应容器起不来（其它容器不受影响，仍会正常启动）：
 #   本机 MySQL 服务  -> net stop MySQL80（服务名以 services.msc 里看到的为准）
 #   本机 redis-server.exe -> 关窗口 / 任务管理器结束
-#   之前手动建的 rabbitmq 容器 -> docker rm -f <容器名>
+#   之前手动建的 rabbitmq / mysql 容器 -> docker rm -f <容器名>
 
 services:
   mysql:
@@ -31,7 +47,9 @@ services:
       MYSQL_DATABASE: dingping    # 首次启动自动建库（空库，表结构需再导一次 hmdp.sql）
       TZ: Asia/Shanghai
     ports:
-      - "3306:3306"
+      # 左侧=宿主机端口（本机 3306 被原生 MySQL 占用，所以换成 3307；yaml 里连的就是它）
+      # 右侧=容器内 MySQL 端口（勿改，镜像里就是 3306）
+      - "3307:3306"
     volumes:
       - hmdp-mysql-data:/var/lib/mysql
     healthcheck:
