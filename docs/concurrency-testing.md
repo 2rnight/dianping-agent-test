@@ -484,3 +484,61 @@ UPDATE tb_seckill_voucher SET end_time = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE v
    两边不一致时会出现"页面显示剩余很多、点抢购却说库存不足"（或反过来）。压测重置时两个都要重置。
 2. 库存为 0 **不会让卡片消失**，只是按钮变灰并提示"库存不足，请刷新再试试"；卡片真的不见，
    基本就是上面 4 个条件之一。
+
+---
+
+## 附：店铺列表查不出数据？（附近商铺 / Redis GEO）
+
+**现象**：打开 `shop-list.html?type=1&name=美食`，一家店都没有。
+
+**原因链**（三处代码连起来看就明白了）：
+
+1. 前端 `shop-list.html` 的 `params` 里**写死了坐标**：
+   ```js
+   x: 120.149993, // 经度
+   y: 30.334229   // 纬度
+   ```
+   所以每次请求都带 x/y：`GET /api/shop/of/type?typeId=1&current=1&sortBy=&x=120.149993&y=30.334229`
+2. 后端 `ShopServiceImpl#queryShopByType()` 一看 x/y 都不为 null，**就走 Redis GEO 分支**，
+   不再走数据库分页：从 `shop:geo:<typeId>` 里按 **半径 5000m** 搜店铺：
+   ```java
+   String key = SHOP_GEO_KEY + typeId;              // shop:geo:1
+   stringRedisTemplate.opsForGeo().search(key, GeoReference.fromCoordinate(x, y), new Distance(5000), ...);
+   ```
+3. `shop:geo:*` 这些键**不会自动生成**，必须手动导入（项目自带的
+   `HmDianPingApplicationTests#loadShopDate()` 就是干这个的）。没导过 → 搜出来是空数组 → 页面空白。
+
+**验证**（应该是空/nil，那就对上了）：
+
+```cmd
+docker exec -i hmdp-redis redis-cli KEYS "shop:geo:*"
+docker exec -i hmdp-redis redis-cli ZCARD shop:geo:1
+```
+
+**导入坐标，二选一**：
+
+```cmd
+:: 方式 A：命令行脚本（推荐）
+python tools/load-shop-geo.py --dry-run     :: 先看要执行什么
+python tools/load-shop-geo.py               :: 真导入，完了会自动 ZCARD 回读校验
+
+:: 方式 B：IDEA 里跑 JUnit 测试
+::   HmDianPingApplicationTests#loadShopDate()
+```
+
+导入后应该是：`shop:geo:1` = **9 家**（美食），`shop:geo:2` = **5 家**（KTV）。
+刷新 `http://localhost:8080/shop-list.html?type=1&name=美食` 就能看到店铺，并且列表里带距离。
+
+**另外两个必须知道的坑**：
+
+1. **只有 2 个分类有店铺**。种子数据里 `tb_shop_type` 有 10 个分类，但 `tb_shop` 只有
+   `type_id = 1`（美食，9 家）和 `type_id = 2`（KTV，5 家）的数据。
+   点"丽人·美发""健身运动"等另外 8 个分类，**本来就查不到店铺**，不是 bug。
+2. **GEO 分支有 5km 半径限制**，前端写死的坐标是杭州西湖附近，14 家种子店铺都在 5km 内
+   （最远的 2816m），所以能全部显示；但你自己往 `tb_shop` 里加的店铺如果坐标离得远，
+   即使导入了 GEO 也不会出现在列表里 —— 那种情况要在前端把 x/y 去掉（走数据库分页），
+   或者把 `queryShopByType` 里的 `new Distance(5000)` 调大。
+
+> 顺带一提：列表页顶部"距离 / 人气 / 评分"三个排序按钮里的 `sortBy` 参数**后端并没有接收**
+> （`queryShopByType` 的形参只有 typeId/current/x/y），所以点了不会真的排序 —— 知道就行，
+> 想实现的话是在 SQL/Redis 那层加 order by。
