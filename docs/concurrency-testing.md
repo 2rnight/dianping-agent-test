@@ -42,7 +42,9 @@ curl http://localhost:8081/shop/1
 
 **压测打哪个地址？**
 - 先打 `http://localhost:8081`（直连 Tomcat，测应用本身）
-- 再打 `http://localhost:8080/api`（走 nginx 全链路）—— nginx 监听 8080，`/api` 前缀会被 rewrite 掉
+- 再打 `http://localhost:8080`（走 nginx 全链路）—— nginx 监听 8080，**但接口要走 `/api` 前缀**：
+  完整 URL 是 `http://localhost:8080/api/voucher-order/seckill/1`，nginx 会把 `/api` rewrite 掉再转给 8081。
+  前缀 /api 一定不能少，否则会被当成静态资源请求（404）
 
 ---
 
@@ -171,11 +173,12 @@ python tools/init-test-tokens.py --count 200 --reset-voucher <券id> --stock 10 
 python tools/seckill-stress.py --voucher-id <券id> --tokens tokens.txt --threads 200
 
 # 场景2：同一个用户并发 50 次 —— 专测"一人一单"的并发安全
+# （Windows 没有 head 的话：python -c "open('one-token.txt','w').write(open('tokens.txt').readline())"）
 head -1 tokens.txt > one-token.txt
 python tools/seckill-stress.py --voucher-id <券id> --tokens one-token.txt --repeat 50 --threads 50
 
 # 场景3：走 nginx 全链路
-python tools/seckill-stress.py --voucher-id <券id> --tokens tokens.txt --threads 200 --base-url http://localhost:8080
+python tools/seckill-stress.py --voucher-id <券id> --tokens tokens.txt --threads 200 --base-url http://localhost:8080/api
 ```
 
 脚本做的事：N 个线程用 `threading.Barrier` 一起发车（尽量让请求挤在同一瞬间），
@@ -207,6 +210,7 @@ UNAUTHORIZED         0   0.0%
    - Variable Names: `token`，Recycle on EOF: `False`，Sharing mode: `All threads`
 4. Thread Group → Add → Sampler → **HTTP Request**
    - Method: `POST`，Path: `/voucher-order/seckill/<券id>`，Server: `localhost`，Port: `8081`
+   - 走 nginx 的话：Port 改 `8080`，Path 前面加 `/api`（`/api/voucher-order/seckill/<券id>`）
 5. HTTP Request → Add → Config Element → **HTTP Header Manager**：`authorization` = `${token}`
 6. Add → Listener → **聚合报告**（Average / 90% / 99% / Throughput / Error%）
 
@@ -236,7 +240,7 @@ int threads = 200;
 ExecutorService es = Executors.newFixedThreadPool(threads);
 CountDownLatch ready = new CountDownLatch(threads);   // 等所有线程就绪
 CountDownLatch start = new CountDownLatch(1);         // 一起发车
-List<Future<Result>> futures = new ArrayList<>();
+List<Future<String>> futures = new ArrayList<>();   // 每个请求拿到的响应体 JSON
 for (int i = 0; i < threads; i++) {
     final String token = tokens.get(i);
     futures.add(es.submit(() -> {
@@ -304,6 +308,9 @@ docker exec hmdp-mysql mysql -uroot -p123456 -N -B -e \
   看 Queues：`QA` 有积压说明消费跟不上（消费者 `concurrency: 5`、`prefetch 10`）；
   消息在 QA 里超过 10 秒会进死信队列 `QD`，`QD` 也有消费者兜底，靠订单号幂等去重
 - **看缓存击穿**：开 debug 日志（`logging.level.com.hmdp: debug`），重建缓存时只应出现一次
+- **看 DB 压力**：`VoucherOrderServiceImpl.checkTimeWindow()` 每个请求都会 `getById(voucherId)` 查一次 MySQL，
+  所以秒杀接口的 DB QPS ≈ 请求 QPS（这本身也是个可优化点：券信息完全可以缓存）。
+  压测时连 MySQL 一起观察，高并发下这里先扛不住
 
 ### 6.4 怎么确认这套压测"确实有鉴别力"
 
@@ -345,8 +352,9 @@ docker exec hmdp-mysql mysql -uroot -p123456 -N -B -e \
 `ShopServiceImpl.queryById` 走的是 `CacheClient.queryWithLogicalExpire`（逻辑过期 + 抢锁后异步重建）。
 
 ```bash
-# 1) 把 1 号店铺写进缓存，逻辑过期时间设成 0 秒（立刻"逻辑过期"）
-#    现成的 HmDianPingApplicationTests#testSaveShop 就是干这个的（改成 saveShop2Redis(1L, 0L) 亦可）
+# 1) 把 1 号店铺写进缓存，并把逻辑过期时间设成 0 秒（一写进去就是"逻辑过期"状态）
+#    现成的 HmDianPingApplicationTests#testSaveShop 写的是 30 分钟逻辑过期，
+#    改成 ShopServiceImpl#saveShop2Redis(1L, 0L) 才会立刻进入"该重建了"的状态
 
 # 2) 500 并发打同一个店铺（GET，且覆盖默认路径）
 python tools/seckill-stress.py --tokens tokens.txt --repeat 5 --threads 200 \
@@ -364,8 +372,9 @@ python tools/seckill-stress.py --tokens tokens.txt --repeat 5 --threads 200 \
 ### 8.2 一人一单的两种实现对比
 
 项目里有两套"一人一单"的写法：Redis 分布式锁（`SimpleRedisLock` / Redisson）和现在的 Lua 原子脚本。
-想复现"没有原子性会怎样"，可以把秒杀改成"先查库存 → 再扣减"的两步写法（非 Lua），
-再用同一批 token 并发压 —— 你会看到成功次数超过库存（超卖）。
+想复现"没有原子性会怎样"（负向验证，跑完记得改回来）：把 `VoucherOrderServiceImpl` 里的 Lua 调用
+换成"`GET` 判库存 → `DECRBY` 扣减"的两步写法，并去掉 `sadd` 那一人一单的判断，再用同一批 token 并发压 ——
+你会看到成功次数超过库存（超卖）、同一用户出现多单，正好和 Lua 版本的干净结果形成对比。
 
 ### 8.3 全局唯一 ID（`RedisIdWorker`）
 

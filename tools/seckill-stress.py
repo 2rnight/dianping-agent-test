@@ -14,8 +14,8 @@
   # 同一个用户并发打 50 次，验证"一人一单"在并发下只成功 1 次
   python tools/seckill-stress.py --voucher-id 1 --tokens one-token.txt --repeat 50 --threads 50
 
-  # 走 nginx 全链路（默认直连 8081 应用）
-  python tools/seckill-stress.py --voucher-id 1 --tokens tokens.txt --base-url http://localhost:8080
+  # 走 nginx 全链路（默认直连 8081 应用）；注意 nginx 的接口前缀是 /api，不能省
+  python tools/seckill-stress.py --voucher-id 1 --tokens tokens.txt --base-url http://localhost:8080/api
 
   # 换个接口也能用：500 并发打同一个店铺（测缓存击穿）
   python tools/seckill-stress.py --tokens tokens.txt --repeat 5 --threads 200 \
@@ -132,7 +132,7 @@ def main():
     parser = argparse.ArgumentParser(description="秒杀接口并发压测")
     parser.add_argument("--voucher-id", type=int, default=None, help="秒杀券 id（默认路径模式下必填，用来拼 URL 和打印校验命令）")
     parser.add_argument("--tokens", default="tokens.txt", help="token 文件，一行一个")
-    parser.add_argument("--base-url", default="http://localhost:8081", help="默认直连应用，走 nginx 填 http://localhost:8080")
+    parser.add_argument("--base-url", default="http://localhost:8081", help="默认直连应用；走 nginx 填 http://localhost:8080/api（/api 前缀不能省）")
     parser.add_argument("--path", default=None, help="接口路径，默认 /voucher-order/seckill/<券id>；可换成 /shop/1 等")
     parser.add_argument("--method", default="POST", help="请求方法，默认 POST（测 /shop/{id} 用 GET，测点赞用 PUT）")
     parser.add_argument("--threads", type=int, default=200, help="并发线程数（=同时发车的请求数）")
