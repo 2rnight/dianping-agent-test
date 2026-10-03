@@ -435,3 +435,52 @@ python tools/seckill-stress.py --voucher-id <券id> --tokens tokens.txt --thread
 ```
 
 **通过标准一句话**：成功次数 ≤ 初始库存、Redis 库存 = 初始 − 成功次数、订单数 = 成功次数、无 user_id 重复、无 401/5xx。
+
+---
+
+## 附：造的券在前端不显示？（排错）
+
+前端的券列表只在**店铺详情页**（`shop-detail.html?id=<shopId>`）展示，首页不展示。
+它调用 `GET /api/voucher/list/<shopId>`，最终执行的是 `VoucherMapper.xml` 里这条 SQL：
+
+```sql
+SELECT ... FROM tb_voucher v
+LEFT JOIN tb_seckill_voucher sv ON v.id = sv.voucher_id
+WHERE v.shop_id = #{shopId} AND v.status = 1
+```
+
+所以"能显示"要同时满足 4 个条件：
+
+| 条件 | 不满足时的现象 | 怎么查 |
+|---|---|---|
+| `tb_voucher.shop_id` = 你打开的那个店铺 id，且该店铺真实存在（种子数据只有店铺 **1~14**） | 任何店铺页都不显示 | 下面的诊断 SQL |
+| `tb_voucher.status = 1` | 不显示 | 同上 |
+| `tb_seckill_voucher.end_time > now()`（前端 `v-if="!isEnd(v)"` 直接隐藏卡片） | 不显示 | 同上 |
+| 打开的是店铺详情页、且经过 nginx（`localhost:8080`，baseURL=`/api`） | 页面空白/报错 | 直接 curl `/api/voucher/list/<shopId>` |
+
+```sql
+-- 一条 SQL 看清全部条件
+SELECT v.id, v.shop_id, v.status, v.type, v.title,
+       sv.stock, sv.begin_time, sv.end_time,
+       (sv.end_time > NOW()) AS not_ended,
+       s.id AS shop_exists
+FROM tb_voucher v
+LEFT JOIN tb_seckill_voucher sv ON sv.voucher_id = v.id
+LEFT JOIN tb_shop s ON s.id = v.shop_id
+WHERE v.id = <券id>;
+```
+
+对照着修：
+
+```sql
+UPDATE tb_voucher SET shop_id = 1, status = 1 WHERE id = <券id>;   -- 挂到 1 号店铺并上架
+UPDATE tb_seckill_voucher SET end_time = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE voucher_id = <券id>;
+```
+
+改完**不用重启应用**（券列表没走缓存），直接刷新 `http://localhost:8080/shop-detail.html?id=1`。
+
+⚠️ 两个容易搞混的点：
+1. 页面上"剩余 X 张"读的是 **MySQL 的 `sv.stock`**，秒杀扣减用的是 **Redis 的 `seckill:stock:<id>`**。
+   两边不一致时会出现"页面显示剩余很多、点抢购却说库存不足"（或反过来）。压测重置时两个都要重置。
+2. 库存为 0 **不会让卡片消失**，只是按钮变灰并提示"库存不足，请刷新再试试"；卡片真的不见，
+   基本就是上面 4 个条件之一。
